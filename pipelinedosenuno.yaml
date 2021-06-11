@@ -1,0 +1,104 @@
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: apply-manifests
+spec:
+  workspaces:
+  - name: source
+  params:
+    - name: manifest_dir
+      description: The directory in source that contains yaml manifests
+      type: string
+      default: "k8s"
+  steps:
+    - name: apply
+      image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+      workingDir: /workspace/source
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          echo Lanzando la app, aguarde unos segundos... 
+          IMAGE=$(oc get is | grep default | awk '{print $1}');oc new-app $IMAGE;sleep 2; oc expose svc $IMAGE
+          echo "-----------------------------------"
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: source-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+---
+
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: build-and-deploy
+spec:
+  workspaces:
+  - name: shared-workspace
+  params:
+    - default: debian
+      description: Nombre del deploy 
+      name: deployment-name
+      type: string
+    - default: 'https://github.com/mguazzardo/demislamer'
+      description: La url del repo
+      name: git-url
+      type: string
+    - default: master
+      description: revision master-main-dev
+      name: git-revision
+      type: string
+    - default: '3'
+      description: version a ser usada
+      name: php-version
+      type: string
+  tasks:
+    - name: fetch-repository
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: deleteExisting
+          value: 'true'
+        - name: revision
+          value: $(params.git-revision)
+      taskRef:
+        kind: ClusterTask
+        name: git-clone
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+    - name: s2i-website
+      params:
+        - name: IMAGE 
+          value: 'image-registry.openshift-image-registry.svc:5000/$(context.pipelineRun.namespace)/$(params.deployment-name):latest' 
+        - name: TLSVERIFY
+          value: 'false'
+        - name: MINOR_VERSION
+          value: $(params.php-version) 
+        - name: PATH_CONTEXT
+          value: .
+      runAfter:
+        - fetch-repository 
+      taskRef:
+        kind: ClusterTask
+        name: s2i-php
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: apply-manifests
+      taskRef:
+        name: apply-manifests
+      workspaces:
+      - name: source
+        workspace: shared-workspace
+      runAfter:
+      - s2i-website
+
+
